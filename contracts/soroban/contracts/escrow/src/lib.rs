@@ -595,6 +595,35 @@ pub struct AdminActionProposal {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MultisigAdmins {
+    /// Three distinct admin addresses required for 2-of-3 multisig pause/unpause.
+    pub admins: Vec<Address>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PauseProposal {
+    /// Admin who proposed the pause.
+    pub proposer: Address,
+    /// Timestamp when proposal was created.
+    pub proposed_at: u64,
+    /// Whether the proposal has been executed.
+    pub executed: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UnpauseProposal {
+    /// Admin who proposed the unpause.
+    pub proposer: Address,
+    /// Timestamp when proposal was created.
+    pub proposed_at: u64,
+    /// Whether the proposal has been executed.
+    pub executed: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CoordinatorRotationProposedEvent {
     pub proposed_coordinator: Address,
 }
@@ -619,6 +648,66 @@ pub struct ContractPausedEvent {
 pub struct ContractUnpausedEvent {
     /// Coordinator address that lifted the pause.
     pub coordinator: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// Published when an admin proposes a multisig pause.
+pub struct PauseProposaledEvent {
+    /// Admin who proposed the pause.
+    pub proposer: Address,
+    /// Timestamp when proposal was created.
+    pub proposed_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// Published when an admin confirms a multisig pause proposal.
+pub struct PauseConfirmedEvent {
+    /// Admin who confirmed the pause.
+    pub confirmer: Address,
+    /// Count of total confirmations for this proposal.
+    pub confirmation_count: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// Published when a multisig pause is executed.
+pub struct MultisigPauseExecutedEvent {
+    /// First confirming admin.
+    pub admin1: Address,
+    /// Second confirming admin.
+    pub admin2: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// Published when an admin proposes a multisig unpause.
+pub struct UnpauseProposaledEvent {
+    /// Admin who proposed the unpause.
+    pub proposer: Address,
+    /// Timestamp when proposal was created.
+    pub proposed_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// Published when an admin confirms a multisig unpause proposal.
+pub struct UnpauseConfirmedEvent {
+    /// Admin who confirmed the unpause.
+    pub confirmer: Address,
+    /// Count of total confirmations for this proposal.
+    pub confirmation_count: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// Published when a multisig unpause is executed.
+pub struct MultisigUnpauseExecutedEvent {
+    /// First confirming admin.
+    pub admin1: Address,
+    /// Second confirming admin.
+    pub admin2: Address,
 }
 
 #[contracttype]
@@ -1598,6 +1687,351 @@ impl ChessterEscrow {
     /// * `Vec<Address>` - Authorized signer addresses.
     pub fn get_admin_signers(env: Env) -> Vec<Address> {
         Self::get_signers(&env)
+    }
+
+    // -----------------------------------------------------------------------
+    // Multisig Emergency Pause Mechanism (Issue #486)
+    // -----------------------------------------------------------------------
+
+    fn multisig_admins_key(env: &Env) -> Symbol {
+        Symbol::new(env, "ms_admins")
+    }
+
+    fn pause_proposal_key(env: &Env) -> Symbol {
+        Symbol::new(env, "pause_prop")
+    }
+
+    fn unpause_proposal_key(env: &Env) -> Symbol {
+        Symbol::new(env, "unpause_prop")
+    }
+
+    fn pause_confirmations_key(env: &Env) -> Symbol {
+        Symbol::new(env, "pause_conf")
+    }
+
+    fn unpause_confirmations_key(env: &Env) -> Symbol {
+        Symbol::new(env, "unpause_conf")
+    }
+
+    /// Sets the three distinct admin addresses for 2-of-3 multisig pause/unpause (Coordinator only).
+    ///
+    /// # Arguments
+    /// * `env` - Environment reference.
+    /// * `admin1` - First admin address.
+    /// * `admin2` - Second admin address.
+    /// * `admin3` - Third admin address.
+    pub fn set_multisig_admins(env: Env, admin1: Address, admin2: Address, admin3: Address) {
+        let coordinator = Self::get_coordinator(env.clone());
+        coordinator.require_auth();
+
+        // Ensure all three addresses are distinct
+        if admin1 == admin2 || admin2 == admin3 || admin1 == admin3 {
+            panic_with_error!(&env, EscrowError::UnauthorizedSigner);
+        }
+
+        let mut admins = Vec::new(&env);
+        admins.push_back(admin1);
+        admins.push_back(admin2);
+        admins.push_back(admin3);
+
+        env.storage()
+            .instance()
+            .set(&Self::multisig_admins_key(&env), &admins);
+        Self::bump_instance_ttl(&env);
+    }
+
+    /// Retrieves the three multisig admin addresses.
+    ///
+    /// # Arguments
+    /// * `env` - Environment reference.
+    ///
+    /// # Returns
+    /// * `Vec<Address>` - Vector containing exactly 3 admin addresses.
+    pub fn get_multisig_admins(env: Env) -> Vec<Address> {
+        env.storage()
+            .instance()
+            .get(&Self::multisig_admins_key(&env))
+            .unwrap_or_else(|| Vec::new(&env))
+    }
+
+    fn is_multisig_admin(env: &Env, addr: &Address) -> bool {
+        Self::get_multisig_admins(env.clone()).contains(addr)
+    }
+
+    /// Proposes a multisig pause by any registered admin.
+    ///
+    /// # Arguments
+    /// * `env` - Environment reference.
+    /// * `admin` - Proposing admin address.
+    pub fn propose_pause(env: Env, admin: Address) {
+        admin.require_auth();
+
+        // Verify admin is registered
+        if !Self::is_multisig_admin(&env, &admin) {
+            panic_with_error!(&env, EscrowError::UnauthorizedSigner);
+        }
+
+        // Check if proposal already exists
+        let pause_key = Self::pause_proposal_key(&env);
+        if env.storage().persistent().has(&pause_key) {
+            panic_with_error!(&env, EscrowError::RotationAlreadyProposed);
+        }
+
+        let now = env.ledger().timestamp();
+        let mut confirmations = Vec::new(&env);
+        confirmations.push_back(admin.clone());
+
+        let proposal = PauseProposal {
+            proposer: admin.clone(),
+            proposed_at: now,
+            executed: false,
+        };
+
+        env.storage().persistent().set(&pause_key, &proposal);
+        Self::bump_entry_ttl(&env, &pause_key);
+
+        // Store initial confirmations
+        env.storage()
+            .persistent()
+            .set(&Self::pause_confirmations_key(&env), &confirmations);
+        Self::bump_entry_ttl(&env, &Self::pause_confirmations_key(&env));
+
+        env.events().publish(
+            (symbol_short!("pause_prop"),),
+            PauseProposaledEvent {
+                proposer: admin,
+                proposed_at: now,
+            },
+        );
+    }
+
+    /// Confirms a pending multisig pause by a second distinct admin.
+    ///
+    /// # Arguments
+    /// * `env` - Environment reference.
+    /// * `admin` - Confirming admin address.
+    pub fn confirm_pause(env: Env, admin: Address) {
+        admin.require_auth();
+
+        // Verify admin is registered
+        if !Self::is_multisig_admin(&env, &admin) {
+            panic_with_error!(&env, EscrowError::UnauthorizedSigner);
+        }
+
+        let pause_key = Self::pause_proposal_key(&env);
+        let mut proposal = env
+            .storage()
+            .persistent()
+            .get(&pause_key)
+            .unwrap_or_else(|| panic_with_error!(&env, EscrowError::RotationNotProposed));
+
+        // Check if already executed
+        if proposal.executed {
+            panic_with_error!(&env, EscrowError::AlreadyApproved);
+        }
+
+        // Get current confirmations
+        let mut confirmations = env
+            .storage()
+            .persistent()
+            .get(&Self::pause_confirmations_key(&env))
+            .unwrap_or_else(|| Vec::new(&env));
+
+        // Check if already confirmed by this admin
+        if confirmations.contains(&admin) {
+            panic_with_error!(&env, EscrowError::AlreadyApproved);
+        }
+
+        // Add confirmation
+        confirmations.push_back(admin.clone());
+
+        // Check if threshold is met (2 of 3)
+        if confirmations.len() >= 2 {
+            // Execute pause
+            proposal.executed = true;
+            env.storage().persistent().set(&pause_key, &proposal);
+            Self::bump_entry_ttl(&env, &pause_key);
+
+            // Set paused flag
+            env.storage()
+                .instance()
+                .set(&Symbol::new(&env, "paused"), &true);
+            Self::bump_instance_ttl(&env);
+
+            // Get the two confirming admins for event
+            let admin1 = confirmations.get(0).unwrap();
+            let admin2 = confirmations.get(1).unwrap();
+
+            env.events().publish(
+                (symbol_short!("pause_exe"),),
+                MultisigPauseExecutedEvent { admin1, admin2 },
+            );
+        } else {
+            // Update confirmations count
+            env.storage()
+                .persistent()
+                .set(&Self::pause_confirmations_key(&env), &confirmations);
+            Self::bump_entry_ttl(&env, &Self::pause_confirmations_key(&env));
+
+            env.events().publish(
+                (symbol_short!("pause_conf"),),
+                PauseConfirmedEvent {
+                    confirmer: admin,
+                    confirmation_count: confirmations.len() as u32,
+                },
+            );
+        }
+    }
+
+    /// Proposes a multisig unpause by any registered admin.
+    ///
+    /// # Arguments
+    /// * `env` - Environment reference.
+    /// * `admin` - Proposing admin address.
+    pub fn propose_unpause(env: Env, admin: Address) {
+        admin.require_auth();
+
+        // Verify admin is registered
+        if !Self::is_multisig_admin(&env, &admin) {
+            panic_with_error!(&env, EscrowError::UnauthorizedSigner);
+        }
+
+        // Check if proposal already exists
+        let unpause_key = Self::unpause_proposal_key(&env);
+        if env.storage().persistent().has(&unpause_key) {
+            panic_with_error!(&env, EscrowError::RotationAlreadyProposed);
+        }
+
+        let now = env.ledger().timestamp();
+        let mut confirmations = Vec::new(&env);
+        confirmations.push_back(admin.clone());
+
+        let proposal = UnpauseProposal {
+            proposer: admin.clone(),
+            proposed_at: now,
+            executed: false,
+        };
+
+        env.storage().persistent().set(&unpause_key, &proposal);
+        Self::bump_entry_ttl(&env, &unpause_key);
+
+        // Store initial confirmations
+        env.storage()
+            .persistent()
+            .set(&Self::unpause_confirmations_key(&env), &confirmations);
+        Self::bump_entry_ttl(&env, &Self::unpause_confirmations_key(&env));
+
+        env.events().publish(
+            (symbol_short!("unpause_prop"),),
+            UnpauseProposaledEvent {
+                proposer: admin,
+                proposed_at: now,
+            },
+        );
+    }
+
+    /// Confirms a pending multisig unpause by a second distinct admin.
+    ///
+    /// # Arguments
+    /// * `env` - Environment reference.
+    /// * `admin` - Confirming admin address.
+    pub fn confirm_unpause(env: Env, admin: Address) {
+        admin.require_auth();
+
+        // Verify admin is registered
+        if !Self::is_multisig_admin(&env, &admin) {
+            panic_with_error!(&env, EscrowError::UnauthorizedSigner);
+        }
+
+        let unpause_key = Self::unpause_proposal_key(&env);
+        let mut proposal = env
+            .storage()
+            .persistent()
+            .get(&unpause_key)
+            .unwrap_or_else(|| panic_with_error!(&env, EscrowError::RotationNotProposed));
+
+        // Check if already executed
+        if proposal.executed {
+            panic_with_error!(&env, EscrowError::AlreadyApproved);
+        }
+
+        // Get current confirmations
+        let mut confirmations = env
+            .storage()
+            .persistent()
+            .get(&Self::unpause_confirmations_key(&env))
+            .unwrap_or_else(|| Vec::new(&env));
+
+        // Check if already confirmed by this admin
+        if confirmations.contains(&admin) {
+            panic_with_error!(&env, EscrowError::AlreadyApproved);
+        }
+
+        // Add confirmation
+        confirmations.push_back(admin.clone());
+
+        // Check if threshold is met (2 of 3)
+        if confirmations.len() >= 2 {
+            // Execute unpause
+            proposal.executed = true;
+            env.storage().persistent().set(&unpause_key, &proposal);
+            Self::bump_entry_ttl(&env, &unpause_key);
+
+            // Clear paused flag
+            env.storage()
+                .instance()
+                .set(&Symbol::new(&env, "paused"), &false);
+            Self::bump_instance_ttl(&env);
+
+            // Get the two confirming admins for event
+            let admin1 = confirmations.get(0).unwrap();
+            let admin2 = confirmations.get(1).unwrap();
+
+            env.events().publish(
+                (symbol_short!("unpause_exe"),),
+                MultisigUnpauseExecutedEvent { admin1, admin2 },
+            );
+        } else {
+            // Update confirmations count
+            env.storage()
+                .persistent()
+                .set(&Self::unpause_confirmations_key(&env), &confirmations);
+            Self::bump_entry_ttl(&env, &Self::unpause_confirmations_key(&env));
+
+            env.events().publish(
+                (symbol_short!("unpause_conf"),),
+                UnpauseConfirmedEvent {
+                    confirmer: admin,
+                    confirmation_count: confirmations.len() as u32,
+                },
+            );
+        }
+    }
+
+    /// Retrieves the pending pause proposal if one exists.
+    ///
+    /// # Arguments
+    /// * `env` - Environment reference.
+    ///
+    /// # Returns
+    /// * `Option<PauseProposal>` - Pending pause proposal or None.
+    pub fn get_pause_proposal(env: Env) -> Option<PauseProposal> {
+        env.storage()
+            .persistent()
+            .get(&Self::pause_proposal_key(&env))
+    }
+
+    /// Retrieves the pending unpause proposal if one exists.
+    ///
+    /// # Arguments
+    /// * `env` - Environment reference.
+    ///
+    /// # Returns
+    /// * `Option<UnpauseProposal>` - Pending unpause proposal or None.
+    pub fn get_unpause_proposal(env: Env) -> Option<UnpauseProposal> {
+        env.storage()
+            .persistent()
+            .get(&Self::unpause_proposal_key(&env))
     }
 
     fn guardians_key(env: &Env) -> Symbol {
