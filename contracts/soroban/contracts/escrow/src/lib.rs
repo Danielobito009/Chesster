@@ -669,13 +669,13 @@ pub const TOPIC_REFUNDED: Symbol = symbol_short!("refunded");
 
 /// Centralized event publishing helper to guarantee uniform indexing format across all match lifecycle transitions.
 pub fn emit_match_event(env: &Env, topic: Symbol, match_id: u64, data: Val) {
-    let topics = (symbol_short!("escrow"), topic, match_id);
+    let topics = (Symbol::new(env, "v1"), symbol_short!("escrow"), topic, match_id);
     env.events().publish(topics, data);
 }
 
 /// Centralized event publishing helper for match settlements.
 pub fn emit_match_settled(env: &Env, match_id: u64, winner: &Address, payout: i128, fee: i128) {
-    let topics = (symbol_short!("escrow"), symbol_short!("settled"), match_id);
+    let topics = (Symbol::new(env, "v1"), symbol_short!("escrow"), symbol_short!("settled"), match_id);
     let data = (winner.clone(), payout, fee);
     env.events().publish(topics, data);
 }
@@ -916,7 +916,7 @@ impl ChessterEscrow {
             .set(&Symbol::new(&env, "paused"), &true);
         Self::bump_instance_ttl(&env);
         env.events().publish(
-            (symbol_short!("paused"),),
+            (Symbol::new(&env, "v1"), symbol_short!("paused"),),
             ContractPausedEvent { coordinator },
         );
     }
@@ -933,7 +933,7 @@ impl ChessterEscrow {
             .set(&Symbol::new(&env, "paused"), &false);
         Self::bump_instance_ttl(&env);
         env.events().publish(
-            (symbol_short!("unpause"),),
+            (Symbol::new(&env, "v1"), symbol_short!("unpause"),),
             ContractUnpausedEvent { coordinator },
         );
     }
@@ -986,7 +986,7 @@ impl ChessterEscrow {
             .set(&Self::migration_key(&env), &true);
         Self::bump_instance_ttl(&env);
         env.events().publish(
-            (symbol_short!("mig_auth"),),
+            (Symbol::new(&env, "v1"), symbol_short!("mig_auth"),),
             MigrationAuthorizedEvent { coordinator },
         );
     }
@@ -1004,7 +1004,7 @@ impl ChessterEscrow {
             .set(&Self::migration_key(&env), &false);
         Self::bump_instance_ttl(&env);
         env.events().publish(
-            (symbol_short!("mig_revk"),),
+            (Symbol::new(&env, "v1"), symbol_short!("mig_revk"),),
             MigrationRevokedEvent { coordinator },
         );
     }
@@ -1084,7 +1084,7 @@ impl ChessterEscrow {
         Self::bump_instance_ttl(&env);
 
         env.events().publish(
-            (symbol_short!("emrg_drn"), token.clone()),
+            (Symbol::new(&env, "v1"), symbol_short!("emrg_drn"), token.clone()),
             EmergencyDrainEvent {
                 coordinator,
                 token,
@@ -1315,7 +1315,7 @@ impl ChessterEscrow {
         coordinator.require_auth();
 
         env.storage().persistent().remove(&DataKey::DrainSchedule);
-        env.events().publish((symbol_short!("drain_can"),), ());
+        env.events().publish((Symbol::new(&env, "v1"), symbol_short!("drain_can"),), ());
     }
 
     /// Executes a scheduled emergency drain after the 7-day timelock has expired (Issue #285).
@@ -1796,7 +1796,7 @@ impl ChessterEscrow {
         }
         Self::record_rotation_approval(&env, &signer, &new_coordinator);
         env.events().publish(
-            (symbol_short!("rot_prop"),),
+            (Symbol::new(&env, "v1"), symbol_short!("rot_prop"),),
             CoordinatorRotationProposedEvent {
                 proposed_coordinator: new_coordinator,
             },
@@ -1855,7 +1855,7 @@ impl ChessterEscrow {
             env.storage().instance().remove(&key);
             Self::bump_instance_ttl(env);
             env.events().publish(
-                (symbol_short!("rot_exec"),),
+                (Symbol::new(&env, "v1"), symbol_short!("rot_exec"),),
                 CoordinatorRotationExecutedEvent {
                     new_coordinator: new_coordinator.clone(),
                 },
@@ -1972,7 +1972,7 @@ impl ChessterEscrow {
         Self::bump_instance_ttl(env);
 
         env.events().publish(
-            (symbol_short!("w_limits"),),
+            (Symbol::new(&env, "v1"), symbol_short!("w_limits"),),
             WagerLimitsUpdatedEvent {
                 min_wager,
                 max_wager,
@@ -2050,7 +2050,7 @@ impl ChessterEscrow {
         Self::bump_instance_ttl(env);
 
         env.events().publish(
-            (symbol_short!("tok_wlim"), token.clone()),
+            (Symbol::new(&env, "v1"), symbol_short!("tok_wlim"), token.clone()),
             TokenWagerLimitsUpdatedEvent {
                 token: token.clone(),
                 min_wager,
@@ -2500,7 +2500,7 @@ impl ChessterEscrow {
         Self::bump_instance_ttl(&env);
 
         env.events().publish(
-            (Symbol::new(&env, "asset_config_updated"), token.clone()),
+            (Symbol::new(&env, "v1"), Symbol::new(&env, "asset_config_updated"), token.clone()),
             AssetConfigUpdatedEvent {
                 token,
                 min_wager: config.min_wager,
@@ -2684,7 +2684,7 @@ impl ChessterEscrow {
             (player1.clone(), token.clone(), amount).into_val(&env),
         );
         env.events().publish(
-            (symbol_short!("created"), game_code.clone()),
+            (Symbol::new(&env, "v1"), symbol_short!("created"), game_code.clone()),
             MatchCreatedEvent {
                 game_code,
                 player1,
@@ -2785,7 +2785,7 @@ impl ChessterEscrow {
             (player2.clone(), m.total_staked).into_val(&env),
         );
         env.events().publish(
-            (symbol_short!("funded"), game_code.clone()),
+            (Symbol::new(&env, "v1"), symbol_short!("funded"), game_code.clone()),
             MatchFundedEvent {
                 game_code,
                 player2,
@@ -2966,7 +2966,7 @@ impl ChessterEscrow {
             Self::bump_entry_ttl(&env, &DataKey::Metrics);
 
             env.events().publish(
-                (symbol_short!("cancelled"), game_code.clone()),
+                (Symbol::new(&env, "v1"), symbol_short!("cancelled"), game_code.clone()),
                 MatchCancelledEvent {
                     game_code: game_code.clone(),
                 },
@@ -3080,7 +3080,7 @@ impl ChessterEscrow {
             Self::settle_match(&env, &coordinator, &game_code, &mut m, None);
 
             env.events().publish(
-                (symbol_short!("resolved"), game_code.clone()),
+                (Symbol::new(&env, "v1"), symbol_short!("resolved"), game_code.clone()),
                 MatchResolvedEvent {
                     game_code: game_code.clone(),
                     winner: None,
@@ -3253,7 +3253,7 @@ impl ChessterEscrow {
         );
 
         env.events().publish(
-            (symbol_short!("timeout"), game_code.clone()),
+            (Symbol::new(&env, "v1"), symbol_short!("timeout"), game_code.clone()),
             MatchTimeoutClaimedEvent {
                 game_code,
                 claimant,
@@ -3290,7 +3290,7 @@ impl ChessterEscrow {
         Self::settle_match(&env, &coordinator, &game_code, &mut m, Some(winner.clone()));
 
         env.events().publish(
-            (symbol_short!("forfeited"), game_code.clone()),
+            (Symbol::new(&env, "v1"), symbol_short!("forfeited"), game_code.clone()),
             MatchForfeitedEvent {
                 game_code,
                 forfeiting_player,
@@ -3330,7 +3330,7 @@ impl ChessterEscrow {
         Self::execute_emergency_refund(&env, &game_code, &mut m);
 
         env.events().publish(
-            (symbol_short!("emer_ref"), game_code.clone()),
+            (Symbol::new(&env, "v1"), symbol_short!("emer_ref"), game_code.clone()),
             MatchEmergencyRefundedEvent { game_code, caller },
         );
     }
@@ -3507,7 +3507,7 @@ impl ChessterEscrow {
 
     fn emit_milestone_event(env: &Env, player: Address, streak_count: u32, milestone_type: Symbol) {
         env.events().publish(
-            (symbol_short!("milestone"), player.clone()),
+            (Symbol::new(env, "v1"), symbol_short!("milestone"), player.clone()),
             (streak_count, milestone_type),
         );
     }
@@ -3732,7 +3732,7 @@ impl ChessterEscrow {
 
         let count = game_codes.len();
         env.events().publish(
-            (Symbol::new(&env, "batch_refunded"),),
+            (Symbol::new(&env, "v1"), Symbol::new(&env, "batch_refunded"),),
             BatchRefundedEvent { count, game_codes },
         );
         count
@@ -3803,7 +3803,7 @@ impl ChessterEscrow {
         Self::execute_refund(&env, &game_code, &mut m);
 
         env.events().publish(
-            (symbol_short!("autoref"), game_code.clone()),
+            (Symbol::new(&env, "v1"), symbol_short!("autoref"), game_code.clone()),
             MatchAutoRefunded {
                 game_code,
                 player1,
@@ -3930,7 +3930,7 @@ impl ChessterEscrow {
             Self::bump_entry_ttl(&env, &sp_key);
 
             env.events().publish(
-                (symbol_short!("funded"), game_code.clone()),
+                (Symbol::new(&env, "v1"), symbol_short!("funded"), game_code.clone()),
                 MatchFundedEvent {
                     game_code: game_code.clone(),
                     player2: player.clone(),
@@ -3939,7 +3939,7 @@ impl ChessterEscrow {
             );
 
             env.events().publish(
-                (symbol_short!("spons"), game_code.clone()),
+                (Symbol::new(&env, "v1"), symbol_short!("spons"), game_code.clone()),
                 SponsoredDepositEvent {
                     game_code,
                     player,
@@ -4036,7 +4036,7 @@ impl ChessterEscrow {
             Self::bump_entry_ttl(&env, &sp_key);
 
             env.events().publish(
-                (symbol_short!("created"), game_code.clone()),
+                (Symbol::new(&env, "v1"), symbol_short!("created"), game_code.clone()),
                 MatchCreatedEvent {
                     game_code: game_code.clone(),
                     player1: player.clone(),
@@ -4046,7 +4046,7 @@ impl ChessterEscrow {
             );
 
             env.events().publish(
-                (symbol_short!("spons"), game_code.clone()),
+                (Symbol::new(&env, "v1"), symbol_short!("spons"), game_code.clone()),
                 SponsoredDepositEvent {
                     game_code,
                     player,
@@ -4134,7 +4134,7 @@ impl ChessterEscrow {
         Self::bump_entry_ttl(&env, &game_code);
 
         env.events().publish(
-            (symbol_short!("mut_canc"), game_code.clone()),
+            (Symbol::new(&env, "v1"), symbol_short!("mut_canc"), game_code.clone()),
             MatchMutualCancelled {
                 game_code,
                 proposed_by: proposer,
@@ -4226,13 +4226,13 @@ impl ChessterEscrow {
             (None::<Address>, m.total_staked, 0_i128).into_val(env),
         );
         env.events().publish(
-            (symbol_short!("refunded"), game_code.clone()),
+            (Symbol::new(&env, "v1"), symbol_short!("refunded"), game_code.clone()),
             MatchRefundedEvent {
                 game_code: game_code.clone(),
             },
         );
         env.events().publish(
-            (symbol_short!("expired"), game_code.clone()),
+            (Symbol::new(&env, "v1"), symbol_short!("expired"), game_code.clone()),
             MatchExpiredEvent {
                 game_code: game_code.clone(),
             },
@@ -4614,7 +4614,7 @@ impl ChessterEscrow {
         Self::bump_entry_ttl(&env, &tournament_id);
 
         env.events().publish(
-            (symbol_short!("tourn_crt"), tournament_id),
+            (Symbol::new(&env, "v1"), symbol_short!("tourn_crt"), tournament_id),
             (buy_in_amount, effective_max, effective_min),
         );
     }
@@ -4687,7 +4687,7 @@ impl ChessterEscrow {
         Self::assert_balance_invariant(&env, &tournament.token);
 
         env.events().publish(
-            (symbol_short!("tourn_jn"), tournament_id, player),
+            (Symbol::new(&env, "v1"), symbol_short!("tourn_jn"), tournament_id, player),
             tournament.total_pool,
         );
     }
@@ -4837,7 +4837,7 @@ impl ChessterEscrow {
         Self::assert_balance_invariant(&env, &tournament.token);
 
         env.events().publish(
-            (symbol_short!("tourn_cmp"), tournament_id),
+            (Symbol::new(&env, "v1"), symbol_short!("tourn_cmp"), tournament_id),
             (winners, tournament.total_pool, rake),
         );
     }
@@ -4875,7 +4875,7 @@ impl ChessterEscrow {
         Self::bump_entry_ttl(&env, &tournament_id);
 
         env.events().publish(
-            (symbol_short!("tourn_can"), tournament_id),
+            (Symbol::new(&env, "v1"), symbol_short!("tourn_can"), tournament_id),
             tournament.players.len(),
         );
     }
@@ -4933,7 +4933,7 @@ impl ChessterEscrow {
         Self::assert_balance_invariant(&env, &tournament.token);
 
         env.events().publish(
-            (symbol_short!("tourn_ref"), tournament_id, player),
+            (Symbol::new(&env, "v1"), symbol_short!("tourn_ref"), tournament_id, player),
             tournament.buy_in_amount,
         );
     }
@@ -4971,7 +4971,7 @@ impl ChessterEscrow {
         Self::bump_entry_ttl(&env, &tournament_id);
 
         env.events().publish(
-            (symbol_short!("tourn_dq"), tournament_id),
+            (Symbol::new(&env, "v1"), symbol_short!("tourn_dq"), tournament_id),
             (player, reason_code),
         );
     }
@@ -5035,7 +5035,7 @@ impl ChessterEscrow {
             STORAGE_TTL_EXTENDED,
         );
         env.events().publish(
-            (symbol_short!("elo_r"), player.clone()),
+            (Symbol::new(&env, "v1"), symbol_short!("elo_r"), player.clone()),
             PlayerEloUpdatedEvent { player, new_elo },
         );
     }
