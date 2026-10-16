@@ -7955,16 +7955,17 @@ mod extended_tests {
         client.create_match(&game_code, &player1, &token.address, &100);
         let events = env.events().all();
         let create_event = events.iter().find(|(id, topics, _)| {
-            if id != &contract_id || topics.len() != 3 {
+            if id != &contract_id || topics.len() != 4 {
                 return false;
             }
             let t0: Result<Symbol, _> = topics.get(0).unwrap().try_into_val(&env);
             let t1: Result<Symbol, _> = topics.get(1).unwrap().try_into_val(&env);
-            t0 == Ok(symbol_short!("escrow")) && t1 == Ok(symbol_short!("created"))
+            let t2: Result<Symbol, _> = topics.get(2).unwrap().try_into_val(&env);
+            t0 == Ok(Symbol::new(&env, "v1")) && t1 == Ok(symbol_short!("escrow")) && t2 == Ok(symbol_short!("created"))
         });
         assert!(create_event.is_some(), "create match event missing");
         let (_, topics, data) = create_event.unwrap();
-        let match_id: u64 = topics.get(2).unwrap().try_into_val(&env).unwrap();
+        let match_id: u64 = topics.get(3).unwrap().try_into_val(&env).unwrap();
         assert_eq!(match_id, 1);
         let (p1, tok, amt): (Address, Address, i128) = data.try_into_val(&env).unwrap();
         assert_eq!(p1, player1);
@@ -7975,16 +7976,17 @@ mod extended_tests {
         client.join_match(&game_code, &player2);
         let events = env.events().all();
         let join_event = events.iter().find(|(id, topics, _)| {
-            if id != &contract_id || topics.len() != 3 {
+            if id != &contract_id || topics.len() != 4 {
                 return false;
             }
             let t0: Result<Symbol, _> = topics.get(0).unwrap().try_into_val(&env);
             let t1: Result<Symbol, _> = topics.get(1).unwrap().try_into_val(&env);
-            t0 == Ok(symbol_short!("escrow")) && t1 == Ok(symbol_short!("joined"))
+            let t2: Result<Symbol, _> = topics.get(2).unwrap().try_into_val(&env);
+            t0 == Ok(Symbol::new(&env, "v1")) && t1 == Ok(symbol_short!("escrow")) && t2 == Ok(symbol_short!("joined"))
         });
         assert!(join_event.is_some(), "join match event missing");
         let (_, topics, data) = join_event.unwrap();
-        let join_match_id: u64 = topics.get(2).unwrap().try_into_val(&env).unwrap();
+        let join_match_id: u64 = topics.get(3).unwrap().try_into_val(&env).unwrap();
         assert_eq!(join_match_id, 1);
         let (p2, pool): (Address, i128) = data.try_into_val(&env).unwrap();
         assert_eq!(p2, player2);
@@ -7994,12 +7996,13 @@ mod extended_tests {
         client.resolve_match(&game_code, &Some(player1.clone()));
         let events = env.events().all();
         let settle_event = events.iter().find(|(id, topics, _)| {
-            if id != &contract_id || topics.len() != 3 {
+            if id != &contract_id || topics.len() != 4 {
                 return false;
             }
             let t0: Result<Symbol, _> = topics.get(0).unwrap().try_into_val(&env);
             let t1: Result<Symbol, _> = topics.get(1).unwrap().try_into_val(&env);
-            t0 == Ok(symbol_short!("escrow")) && t1 == Ok(symbol_short!("settled"))
+            let t2: Result<Symbol, _> = topics.get(2).unwrap().try_into_val(&env);
+            t0 == Ok(Symbol::new(&env, "v1")) && t1 == Ok(symbol_short!("escrow")) && t2 == Ok(symbol_short!("settled"))
         });
         assert!(settle_event.is_some(), "settle match event missing");
         let (_, topics, data) = settle_event.unwrap();
@@ -8038,16 +8041,17 @@ mod extended_tests {
 
         let events = env.events().all();
         let refund_event = events.iter().find(|(id, topics, _)| {
-            if id != &contract_id || topics.len() != 3 {
+            if id != &contract_id || topics.len() != 4 {
                 return false;
             }
             let t0: Result<Symbol, _> = topics.get(0).unwrap().try_into_val(&env);
             let t1: Result<Symbol, _> = topics.get(1).unwrap().try_into_val(&env);
-            t0 == Ok(symbol_short!("escrow")) && t1 == Ok(symbol_short!("refunded"))
+            let t2: Result<Symbol, _> = topics.get(2).unwrap().try_into_val(&env);
+            t0 == Ok(Symbol::new(&env, "v1")) && t1 == Ok(symbol_short!("escrow")) && t2 == Ok(symbol_short!("refunded"))
         });
         assert!(refund_event.is_some(), "refund event missing");
         let (_, topics, data) = refund_event.unwrap();
-        let refund_match_id: u64 = topics.get(2).unwrap().try_into_val(&env).unwrap();
+        let refund_match_id: u64 = topics.get(3).unwrap().try_into_val(&env).unwrap();
         assert_eq!(refund_match_id, 1);
         let (winner, payout, fee): (Option<Address>, i128, i128) = data.try_into_val(&env).unwrap();
         assert_eq!(winner, None);
