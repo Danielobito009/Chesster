@@ -150,6 +150,8 @@ pub enum EscrowError {
     UnauthorizedPlayer = 49,
     /// Mutual cancellation proposal is older than the confirmation window.
     ProposalExpired = 50,
+    /// Arithmetic overflow occurred during tournament prize calculation (Issue #484).
+    ArithmeticOverflow = 51,
 }
 
 /// Payload for player deposit authorization with nonce-based replay protection (Issue #284).
@@ -757,11 +759,29 @@ fn checked_mul_div(env: &Env, a: i128, b: i128, denom: i128) -> i128 {
         .unwrap_or_else(|| panic_with_error!(env, EscrowError::InvariantViolated))
 }
 
-fn mul_div_bps(amount: i128, bps: u32) -> i128 {
-    let bps = i128::from(bps);
-    let whole = (amount / BPS_DENOMINATOR).checked_mul(bps).unwrap();
-    let fraction = (amount % BPS_DENOMINATOR).checked_mul(bps).unwrap() / BPS_DENOMINATOR;
-    whole.checked_add(fraction).unwrap()
+/// Calculate (amount * bps) / 10_000 with safe arithmetic.
+/// Returns (quotient, remainder) where remainder is the residual that should be
+/// credited to ensure exact total payout (Issue #484).
+fn mul_div_bps(env: &Env, amount: i128, bps: u32) -> (i128, i128) {
+    let bps_i128 = i128::from(bps);
+    
+    // Decompose to avoid overflow: (a/b)*c + (a%b)*c/b
+    let whole = (amount / BPS_DENOMINATOR)
+        .checked_mul(bps_i128)
+        .unwrap_or_else(|| panic_with_error!(env, EscrowError::ArithmeticOverflow));
+    
+    let remainder_part = (amount % BPS_DENOMINATOR)
+        .checked_mul(bps_i128)
+        .unwrap_or_else(|| panic_with_error!(env, EscrowError::ArithmeticOverflow));
+    
+    let fraction = remainder_part / BPS_DENOMINATOR;
+    let residual = remainder_part % BPS_DENOMINATOR;
+    
+    let quotient = whole
+        .checked_add(fraction)
+        .unwrap_or_else(|| panic_with_error!(env, EscrowError::ArithmeticOverflow));
+    
+    (quotient, residual)
 }
 
 /// Payload for resolving a match via Ed25519 signature.
@@ -1471,9 +1491,11 @@ impl ChessterEscrow {
     ///
     /// # Returns
     /// * `(i128, i128)` - (net_prize, rake).
-    pub fn calculate_tournament_rake(total_pool: i128, fee_bps: u32) -> (i128, i128) {
-        let rake = mul_div_bps(total_pool, fee_bps);
-        let net_prize = total_pool - rake;
+    pub fn calculate_tournament_rake(env: &Env, total_pool: i128, fee_bps: u32) -> (i128, i128) {
+        let (rake, _) = mul_div_bps(env, total_pool, fee_bps);
+        let net_prize = total_pool
+            .checked_sub(rake)
+            .unwrap_or_else(|| panic_with_error!(env, EscrowError::ArithmeticOverflow));
         (net_prize, rake)
     }
 
@@ -4746,7 +4768,7 @@ impl ChessterEscrow {
                 }
             }
         }
-        let (net_pool, rake) = Self::calculate_tournament_rake(tournament.total_pool, fee_bps);
+        let (net_pool, rake) = Self::calculate_tournament_rake(&env, tournament.total_pool, fee_bps);
 
         tournament.status = TournamentStatus::Completed;
         tournament.final_rankings = winners.clone();
@@ -4760,15 +4782,37 @@ impl ChessterEscrow {
 
         let mut total_distributed: i128 = 0;
         let num_winners = winners.len();
+        let mut accumulated_residuals: i128 = 0;
+        
         for i in 0..num_winners {
             let winner = winners.get(i).unwrap();
             let bps = payout_bps.get(i).unwrap();
-            let payout = if i == num_winners - 1 {
-                net_pool.checked_sub(total_distributed).unwrap()
+            let (payout_base, residual) = if i == num_winners - 1 {
+                // Last winner gets the remainder to ensure total payout equals net_pool exactly
+                let final_payout = net_pool
+                    .checked_sub(total_distributed)
+                    .unwrap_or_else(|| panic_with_error!(&env, EscrowError::ArithmeticOverflow));
+                (final_payout, 0)
             } else {
-                mul_div_bps(net_pool, bps)
+                mul_div_bps(&env, net_pool, bps)
             };
-            total_distributed = total_distributed.checked_add(payout).unwrap();
+            
+            // Apply accumulated residuals to first place winner (Issue #484)
+            let payout = if i == 0 {
+                payout_base.checked_add(accumulated_residuals)
+                    .unwrap_or_else(|| panic_with_error!(&env, EscrowError::ArithmeticOverflow))
+            } else {
+                payout_base
+            };
+            
+            total_distributed = total_distributed
+                .checked_add(payout)
+                .unwrap_or_else(|| panic_with_error!(&env, EscrowError::ArithmeticOverflow));
+            
+            // Accumulate residuals from this prize tier
+            accumulated_residuals = accumulated_residuals
+                .checked_add(residual)
+                .unwrap_or_else(|| panic_with_error!(&env, EscrowError::ArithmeticOverflow));
 
             if payout > 0 {
                 let is_disqualified = tournament.disqualified.get(winner.clone()).unwrap_or(false);
@@ -4782,7 +4826,9 @@ impl ChessterEscrow {
             }
         }
 
-        let total_out = total_distributed.checked_add(rake).unwrap();
+        let total_out = total_distributed
+            .checked_add(rake)
+            .unwrap_or_else(|| panic_with_error!(&env, EscrowError::ArithmeticOverflow));
         if total_out != tournament.total_pool {
             panic_with_error!(&env, EscrowError::InvariantViolated);
         }
