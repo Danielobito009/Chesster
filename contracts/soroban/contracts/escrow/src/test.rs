@@ -4161,6 +4161,95 @@ mod extended_tests {
         assert_eq!(token.balance(&contract_id), 0);
     }
 
+    /// Test: Cooperative draw settlement via resolve_match(..., None) refunds exact stakes
+    /// with zero fee deduction, confirming balance conservation per Issue #483.
+    ///
+    /// This test verifies:
+    /// 1. Both players receive 100% of their deposited principal back
+    /// 2. No fees are routed to the treasury vault on cooperative draws
+    /// 3. Contract balance returns to zero (no stranded funds)
+    /// 4. Match status transitions to Resolved with winner = None
+    /// 5. Total fees collected does NOT increase
+    #[test]
+    fn test_resolve_match_draw_zero_fee_refund() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let coordinator = Address::generate(&env);
+        let player1 = Address::generate(&env);
+        let player2 = Address::generate(&env);
+        let token_admin = Address::generate(&env);
+
+        let (token, token_admin_client) = create_token_contract(&env, &token_admin);
+        token_admin_client.mint(&player1, &5000);
+        token_admin_client.mint(&player2, &5000);
+
+        let contract_id = env.register(ChessterEscrow, ());
+        let client = ChessterEscrowClient::new(&env, &contract_id);
+
+        // Initialize with 5% (500 bps) fee
+        client.init(&coordinator, &500);
+        client.add_whitelisted_token(&token.address);
+
+        // Set treasury vault to track fee routing
+        let treasury = Address::generate(&env);
+        client.set_treasury_vault(&treasury);
+
+        // Create match with 500 token wager each
+        let game_code = String::from_str(&env, "DRAW_TEST_001");
+        approve(&env, &token, &player1, &contract_id, 5000);
+        approve(&env, &token, &player2, &contract_id, 5000);
+        client.create_match(&game_code, &player1, &token.address, &500);
+        client.join_match(&game_code, &player2);
+
+        // Capture balances before settlement
+        let player1_balance_before = token.balance(&player1);
+        let player2_balance_before = token.balance(&player2);
+        let treasury_balance_before = token.balance(&treasury);
+        let contract_balance_before = token.balance(&contract_id);
+
+        // Total pool: 500 + 500 = 1000
+        assert_eq!(player1_balance_before, 4500);
+        assert_eq!(player2_balance_before, 4500);
+        assert_eq!(treasury_balance_before, 0);
+        assert_eq!(contract_balance_before, 1000);
+
+        // Resolve as draw (winner = None)
+        client.resolve_match(&game_code, &None);
+
+        // Verify match status
+        let match_data = client.get_match(&game_code);
+        assert_eq!(match_data.status, MatchStatus::Resolved);
+        assert_eq!(match_data.winner, None);
+
+        // Verify balances after settlement: exact principal returned, no fees deducted
+        let player1_balance_after = token.balance(&player1);
+        let player2_balance_after = token.balance(&player2);
+        let treasury_balance_after = token.balance(&treasury);
+        let contract_balance_after = token.balance(&contract_id);
+
+        // Each player gets back their exact 500 wager
+        assert_eq!(player1_balance_after, 5000, "Player 1 should receive 100% of principal (500)");
+        assert_eq!(player2_balance_after, 5000, "Player 2 should receive 100% of principal (500)");
+
+        // Treasury receives ZERO fee on cooperative draw
+        assert_eq!(
+            treasury_balance_after, 0,
+            "Treasury should receive 0 fee on cooperative draw"
+        );
+
+        // Contract balance should be zero (no stranded funds)
+        assert_eq!(contract_balance_after, 0, "Contract should hold 0 after draw settlement");
+
+        // Verify no fee was collected
+        let total_fees = client.get_total_fees_collected(&token.address);
+        assert_eq!(total_fees, 0, "Total fees collected should remain 0 for draw settlement");
+
+        // Verify invariant: sum of player balances + contract balance = initial supply
+        let total = player1_balance_after + player2_balance_after + contract_balance_after;
+        assert_eq!(total, 10000, "Balance conservation invariant: all funds accounted for");
+    }
+
     #[test]
     fn test_refund_after_timeout() {
         let env = Env::default();
