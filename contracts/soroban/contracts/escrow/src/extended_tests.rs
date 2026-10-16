@@ -469,4 +469,384 @@ mod extended_tests {
             assert!(first_payout >= second_payout, "First place should receive remainder bonus");
         }
     }
+
+    // ========================================================================
+    // Multisig Emergency Pause Mechanism Tests (Issue #486)
+    // ========================================================================
+
+    #[cfg(test)]
+    mod multisig_pause_tests {
+        use super::super::*;
+
+        /// Test: Setting up multisig admins with 3 distinct addresses succeeds
+        #[test]
+        fn test_multisig_admins_setup() {
+            let env = Env::default();
+            env.mock_all_auths();
+
+            let coordinator = Address::generate(&env);
+            let admin1 = Address::generate(&env);
+            let admin2 = Address::generate(&env);
+            let admin3 = Address::generate(&env);
+
+            let client = ChessterEscrowClient::new(&env, &contract_id);
+            client.init(&coordinator, &500);
+
+            // Set up multisig admins
+            client.set_multisig_admins(&admin1, &admin2, &admin3);
+
+            let admins = client.get_multisig_admins();
+            assert_eq!(admins.len(), 3);
+            assert!(admins.contains(&admin1));
+            assert!(admins.contains(&admin2));
+            assert!(admins.contains(&admin3));
+        }
+
+        /// Test: Duplicate admin addresses are rejected
+        #[test]
+        fn test_multisig_admins_duplicate_rejected() {
+            let env = Env::default();
+            env.mock_all_auths();
+
+            let coordinator = Address::generate(&env);
+            let admin1 = Address::generate(&env);
+            let admin2 = Address::generate(&env);
+
+            let client = ChessterEscrowClient::new(&env, &contract_id);
+            client.init(&coordinator, &500);
+
+            // Try to set with duplicate addresses - should fail
+            let result = client.try_set_multisig_admins(&admin1, &admin1, &admin2);
+            assert!(result.is_err());
+
+            let result = client.try_set_multisig_admins(&admin1, &admin2, &admin1);
+            assert!(result.is_err());
+        }
+
+        /// Test: Propose pause by unregistered address is rejected
+        #[test]
+        fn test_propose_pause_unauthorized() {
+            let env = Env::default();
+            env.mock_all_auths();
+
+            let coordinator = Address::generate(&env);
+            let admin1 = Address::generate(&env);
+            let admin2 = Address::generate(&env);
+            let admin3 = Address::generate(&env);
+            let outsider = Address::generate(&env);
+
+            let client = ChessterEscrowClient::new(&env, &contract_id);
+            client.init(&coordinator, &500);
+            client.set_multisig_admins(&admin1, &admin2, &admin3);
+
+            // Try to propose pause from unauthorized address
+            let result = client.try_propose_pause(&outsider);
+            assert!(result.is_err());
+        }
+
+        /// Test: Authorized admin can propose pause successfully
+        #[test]
+        fn test_propose_pause_authorized() {
+            let env = Env::default();
+            env.mock_all_auths();
+
+            let coordinator = Address::generate(&env);
+            let admin1 = Address::generate(&env);
+            let admin2 = Address::generate(&env);
+            let admin3 = Address::generate(&env);
+
+            let client = ChessterEscrowClient::new(&env, &contract_id);
+            client.init(&coordinator, &500);
+            client.set_multisig_admins(&admin1, &admin2, &admin3);
+
+            // Propose pause from authorized admin
+            client.propose_pause(&admin1);
+
+            // Verify proposal exists
+            let proposal = client.get_pause_proposal();
+            assert!(proposal.is_some());
+            let pause_prop = proposal.unwrap();
+            assert_eq!(pause_prop.proposer, admin1);
+            assert!(!pause_prop.executed);
+        }
+
+        /// Test: Single signature (proposer only) does not execute pause
+        #[test]
+        fn test_pause_single_signature_insufficient() {
+            let env = Env::default();
+            env.mock_all_auths();
+
+            let coordinator = Address::generate(&env);
+            let admin1 = Address::generate(&env);
+            let admin2 = Address::generate(&env);
+            let admin3 = Address::generate(&env);
+
+            let client = ChessterEscrowClient::new(&env, &contract_id);
+            client.init(&coordinator, &500);
+            client.set_multisig_admins(&admin1, &admin2, &admin3);
+
+            // Propose pause
+            client.propose_pause(&admin1);
+
+            // Contract should NOT be paused yet (need 2 confirmations)
+            assert!(!client.is_paused());
+        }
+
+        /// Test: Two distinct admin signatures execute pause (happy path)
+        #[test]
+        fn test_pause_two_signatures_execute() {
+            let env = Env::default();
+            env.mock_all_auths();
+
+            let coordinator = Address::generate(&env);
+            let admin1 = Address::generate(&env);
+            let admin2 = Address::generate(&env);
+            let admin3 = Address::generate(&env);
+
+            let client = ChessterEscrowClient::new(&env, &contract_id);
+            client.init(&coordinator, &500);
+            client.set_multisig_admins(&admin1, &admin2, &admin3);
+
+            // Propose pause from admin1
+            client.propose_pause(&admin1);
+
+            // Contract should NOT be paused yet
+            assert!(!client.is_paused());
+
+            // Admin2 confirms pause
+            client.confirm_pause(&admin2);
+
+            // Contract should NOW be paused
+            assert!(client.is_paused());
+
+            // Verify proposal is marked as executed
+            let proposal = client.get_pause_proposal();
+            assert!(proposal.is_some());
+            assert!(proposal.unwrap().executed);
+        }
+
+        /// Test: Same admin cannot confirm their own proposal (duplicate prevention)
+        #[test]
+        fn test_pause_duplicate_confirmation_rejected() {
+            let env = Env::default();
+            env.mock_all_auths();
+
+            let coordinator = Address::generate(&env);
+            let admin1 = Address::generate(&env);
+            let admin2 = Address::generate(&env);
+            let admin3 = Address::generate(&env);
+
+            let client = ChessterEscrowClient::new(&env, &contract_id);
+            client.init(&coordinator, &500);
+            client.set_multisig_admins(&admin1, &admin2, &admin3);
+
+            // Propose pause from admin1
+            client.propose_pause(&admin1);
+
+            // Admin1 tries to confirm their own proposal - should fail
+            let result = client.try_confirm_pause(&admin1);
+            assert!(result.is_err());
+
+            // Contract should still NOT be paused
+            assert!(!client.is_paused());
+        }
+
+        /// Test: Unauthorized address cannot confirm pause proposal
+        #[test]
+        fn test_pause_confirmation_unauthorized() {
+            let env = Env::default();
+            env.mock_all_auths();
+
+            let coordinator = Address::generate(&env);
+            let admin1 = Address::generate(&env);
+            let admin2 = Address::generate(&env);
+            let admin3 = Address::generate(&env);
+            let outsider = Address::generate(&env);
+
+            let client = ChessterEscrowClient::new(&env, &contract_id);
+            client.init(&coordinator, &500);
+            client.set_multisig_admins(&admin1, &admin2, &admin3);
+
+            // Propose pause from admin1
+            client.propose_pause(&admin1);
+
+            // Outsider tries to confirm - should fail
+            let result = client.try_confirm_pause(&outsider);
+            assert!(result.is_err());
+
+            // Contract should still NOT be paused
+            assert!(!client.is_paused());
+        }
+
+        /// Test: Propose unpause by authorized admin
+        #[test]
+        fn test_propose_unpause_authorized() {
+            let env = Env::default();
+            env.mock_all_auths();
+
+            let coordinator = Address::generate(&env);
+            let admin1 = Address::generate(&env);
+            let admin2 = Address::generate(&env);
+            let admin3 = Address::generate(&env);
+
+            let client = ChessterEscrowClient::new(&env, &contract_id);
+            client.init(&coordinator, &500);
+            client.set_multisig_admins(&admin1, &admin2, &admin3);
+
+            // First pause the contract
+            client.propose_pause(&admin1);
+            client.confirm_pause(&admin2);
+            assert!(client.is_paused());
+
+            // Propose unpause
+            client.propose_unpause(&admin1);
+
+            // Verify proposal exists
+            let unpause_prop = client.get_unpause_proposal();
+            assert!(unpause_prop.is_some());
+            let proposal = unpause_prop.unwrap();
+            assert_eq!(proposal.proposer, admin1);
+            assert!(!proposal.executed);
+        }
+
+        /// Test: Two distinct admin signatures execute unpause
+        #[test]
+        fn test_unpause_two_signatures_execute() {
+            let env = Env::default();
+            env.mock_all_auths();
+
+            let coordinator = Address::generate(&env);
+            let admin1 = Address::generate(&env);
+            let admin2 = Address::generate(&env);
+            let admin3 = Address::generate(&env);
+
+            let client = ChessterEscrowClient::new(&env, &contract_id);
+            client.init(&coordinator, &500);
+            client.set_multisig_admins(&admin1, &admin2, &admin3);
+
+            // Pause the contract
+            client.propose_pause(&admin1);
+            client.confirm_pause(&admin2);
+            assert!(client.is_paused());
+
+            // Propose unpause
+            client.propose_unpause(&admin2);
+
+            // Admin3 confirms unpause
+            client.confirm_unpause(&admin3);
+
+            // Contract should NOW be unpaused
+            assert!(!client.is_paused());
+
+            // Verify proposal is marked as executed
+            let unpause_prop = client.get_unpause_proposal();
+            assert!(unpause_prop.is_some());
+            assert!(unpause_prop.unwrap().executed);
+        }
+
+        /// Test: Paused state prevents match creation
+        #[test]
+        fn test_pause_blocks_match_creation() {
+            let env = Env::default();
+            env.mock_all_auths();
+
+            let coordinator = Address::generate(&env);
+            let admin1 = Address::generate(&env);
+            let admin2 = Address::generate(&env);
+            let admin3 = Address::generate(&env);
+            let player1 = Address::generate(&env);
+            let token = Address::generate(&env);
+
+            let client = ChessterEscrowClient::new(&env, &contract_id);
+            client.init(&coordinator, &500);
+            client.set_multisig_admins(&admin1, &admin2, &admin3);
+
+            // Add token to whitelist
+            client.add_whitelisted_token(&token);
+
+            // Create match should work before pause
+            let game_code = String::from_slice(&env, "game1");
+            client.create_match(&game_code, &player1, &token, &100);
+
+            // Pause the contract
+            client.propose_pause(&admin1);
+            client.confirm_pause(&admin2);
+            assert!(client.is_paused());
+
+            // Create match should fail now
+            let game_code2 = String::from_slice(&env, "game2");
+            let result = client.try_create_match(&game_code2, &player1, &token, &100);
+            assert!(result.is_err());
+        }
+
+        /// Test: Paused state prevents tournament creation
+        #[test]
+        fn test_pause_blocks_tournament_creation() {
+            let env = Env::default();
+            env.mock_all_auths();
+
+            let coordinator = Address::generate(&env);
+            let admin1 = Address::generate(&env);
+            let admin2 = Address::generate(&env);
+            let admin3 = Address::generate(&env);
+            let organizer = Address::generate(&env);
+            let token = Address::generate(&env);
+
+            let client = ChessterEscrowClient::new(&env, &contract_id);
+            client.init(&coordinator, &500);
+            client.set_multisig_admins(&admin1, &admin2, &admin3);
+
+            // Add token to whitelist
+            client.add_whitelisted_token(&token);
+
+            // Create tournament should work before pause
+            let tournament_id = String::from_slice(&env, "tourn1");
+            client.create_tournament(&tournament_id, &organizer, &token, &100, &10, &3600);
+
+            // Pause the contract
+            client.propose_pause(&admin1);
+            client.confirm_pause(&admin2);
+            assert!(client.is_paused());
+
+            // Create tournament should fail now
+            let tournament_id2 = String::from_slice(&env, "tourn2");
+            let result = client.try_create_tournament(&tournament_id2, &organizer, &token, &100, &10, &3600);
+            assert!(result.is_err());
+        }
+
+        /// Test: Unpause re-enables match and tournament creation
+        #[test]
+        fn test_unpause_enables_operations() {
+            let env = Env::default();
+            env.mock_all_auths();
+
+            let coordinator = Address::generate(&env);
+            let admin1 = Address::generate(&env);
+            let admin2 = Address::generate(&env);
+            let admin3 = Address::generate(&env);
+            let player1 = Address::generate(&env);
+            let token = Address::generate(&env);
+
+            let client = ChessterEscrowClient::new(&env, &contract_id);
+            client.init(&coordinator, &500);
+            client.set_multisig_admins(&admin1, &admin2, &admin3);
+
+            // Add token to whitelist
+            client.add_whitelisted_token(&token);
+
+            // Pause then unpause
+            client.propose_pause(&admin1);
+            client.confirm_pause(&admin2);
+            assert!(client.is_paused());
+
+            client.propose_unpause(&admin2);
+            client.confirm_unpause(&admin3);
+            assert!(!client.is_paused());
+
+            // Create match should work again
+            let game_code = String::from_slice(&env, "game1");
+            let result = client.try_create_match(&game_code, &player1, &token, &100);
+            assert!(result.is_ok());
+        }
+    }
 }
